@@ -1,7 +1,5 @@
 # TechArena 2025 – EMS Battery Optimizer (Team Master Poulet)
 
-# Last Update 
-To run the program, the input data file (../input/TechArena2025_data.xlsx) is required. To obtain it, please contact the owner of the file.
 
 ## **Description**
 This project was developed as part of the **Huawei TechArena 2025 (Nuremberg)** competition.  
@@ -12,16 +10,9 @@ The objective is to design an **Energy Management System (EMS)** to optimize the
 - **Automatic Frequency Restoration Reserve (aFRR)**: secondary reserve (Pos/Neg).
 
 The code produces three output files:  
-1. **TechArena_Phase1_Configuration.csv** : tested configurations (C-rate, cycles, ROI).  
-2. **TechArena_Phase1_Investment.csv** : financial analysis (CAPEX, OPEX, annualized ROI).  
-3. **TechArena_Phase1_Operation.csv** : operational trajectory (SoC, charge/discharge, market participation).
-
-
-
-
-## **Project Structure**
-
-For this project, we have implemented two different approaches : The heuristic method and an experimental MIP optimization algorithm
+1. **TechArena_Phase2_Configuration.csv** : tested configurations (C-rate, cycles, ROI).  
+2. **TechArena_Phase2_Investment.csv** : financial analysis (CAPEX, OPEX, annualized ROI).  
+3. **TechArena_Phase2_Operation.csv** : operational trajectory (SoC, charge/discharge, market participation).
 
 ### **The Heuristic method**
 
@@ -31,10 +22,12 @@ The battery generates revenues by:
 - **charging (buying)** when Day-Ahead (DA) market prices are low,  
 - **discharging (selling)** when DA prices are high,  
 - while respecting the physical constraints of the BESS (capacity, C-rate, SOC limits).
+- **AFRR Energie** we used an activation factor to charge and discharge the batterie.
 
-In addition, a portion of the battery power is **reserved** for ancillary services:
+A portion of the battery power is **reserved** for ancillary services:
 - **FCR (Frequency Containment Reserve)**: remuneration based on available MW every 4h,  
 - **aFRR (automatic Frequency Restoration Reserve)**: remuneration for upward (Pos) and downward (Neg) capacity, also in 4h blocks.
+Additionally, the model now includes battery degradation and temperature effects, to better capture real-world behavior and lifecycle economics.
 
 #### **2. Strategy** ####
 The year is splitted into days ans we pick the lowest-price slots of the day for the charging intervals and the highest-price slots of the day.for discharging intervals. After that, we apply physical constraints such as :
@@ -43,7 +36,44 @@ The year is splitted into days ans we pick the lowest-price slots of the day for
    - Round-trip efficiency (≈ 90%) is enforced.
 To obtain the total profit, we compute the day-ahead revenues + FCR and aFRR revenues. 
 
-#### **3. Advantages and limitations** ####
+#### **3. Degradation Model** ####
+
+In Phase 2, we introduced two key mechanisms:
+
+a. **Cycle aging** – linked to the **Depth of Discharge (DoD)** and number of charge/discharge cycles.
+   $$\\Delta SoH_{cycle} = \\frac{k_{cycle} \\cdot (DoD)^{1.1}}{N_{life}}$$
+
+b. **Calendar aging** – linked to **time** and **temperature** via the **Arrhenius law**:
+   $$k_{cal}(T) = k_0 \\cdot e^{-\\frac{E_a}{R(T+273.15)}}$$
+   $$\\Delta SoH_{calendar} = k_{cal}(T) \\cdot \\Delta t$$
+
+   Where:  
+   - $E_a$ = activation energy (≈ 30,000 J/mol),  
+   - $R$ = 8.314 J/mol/K (gas constant),  
+   - $k_0$ = base degradation constant (≈ 1e−7),  
+   - $T$ = ambient temperature (°C).
+
+c. **Total SoH update**
+   $$SoH_{t+1} = SoH_t - (\\Delta SoH_{cycle} + \\Delta SoH_{calendar})$$
+
+d. **Effective capacity update**
+   $$E_{nom,eff}(t) = E_{nom} \\times SoH(t)$$
+
+This degradation mechanism dynamically affects energy storage and power output, reducing the usable capacity as the battery ages.
+
+---
+
+#### **4. Temperature Impact**
+Temperature impacts both efficiency and degradation:
+- The **optimal temperature** is around **25°C**.  
+- Above or below this range, efficiency decreases slightly and **aging accelerates** exponentially.
+
+The model includes a temperature factor:
+$$f_T = e^{-((T - 25)/15)^2}$$
+that scales degradation rates.
+
+
+#### **5. Advantages and limitations** ####
 ✅ Advantages:
 - Very fast to compute (runs on a laptop in seconds).  
 - Intuitive and easy to explain.  
@@ -54,96 +84,25 @@ To obtain the total profit, we compute the day-ahead revenues + FCR and aFRR rev
 - Does not capture market uncertainty.  
 - Simplified allocation between DA, FCR, and aFRR (fixed share).  
 
-#### **4. Scripts** ####
+#### **6. Scripts** ####
 Inside the `heuristic_method` folder, we only need :
 - `main.py` : main script (simulation and CSV generation).
 
 The results are stored inside the `output` folder and the data used are stored inside the `input` folder
 
 
-#### **5. Call the method**  
+#### **7. Call the method**  
 Use
  ```bash
 python main.py
 ```
 
-
-
-### **The Mixed-Integer Programming (MIP) Method**
-
-#### **1. General principle** 
-The optimization problem is formulated as a **Mixed-Integer Linear Program (MILP)** using **Pyomo**.  
-The goal is to **maximize yearly revenues** from:
-- **Day-Ahead (DA) trading**: buy energy when prices are low, sell when prices are high,  
-- **Ancillary services**: FCR and aFRR capacity revenues (4h blocks).
-
-The novelty of the MIP approach is that it considers **all timesteps simultaneously**, and uses **binary variables** to prevent simultaneous charging and discharging.
-
-#### **2. Strategy**
-The model is built with:
-- **Decision variables**:
-  - `Pch(t)` = charging power at timestep *t*,  
-  - `Pdis(t)` = discharging power at timestep *t*,  
-  - `SoC(t)` = state of charge,  
-  - `u_ch(t), u_dis(t)` = binary on/off variables (charging or discharging).  
-
-- **Constraints**:
-  - SOC dynamics:  
-    $$
-    SOC(t+1) = SOC(t) + \eta_{ch} P_{ch}(t)\Delta t - \frac{1}{\eta_{dis}} P_{dis}(t)\Delta t
-    $$
-  - SOC bounds: $$ SOC_{min} \leq SOC(t) \leq SOC_{max} $$  
-  - Power limits: $$ 0 \leq P_{ch}(t) \leq P_{max} \cdot u_{ch}(t) $$  
-  - No simultaneous charging/discharging: $$ u_{ch}(t) + u_{dis}(t) \leq 1 $$  
-
-- **Objective function**:
-  $$
-  \max \sum_t \Big( P_{dis}(t) \cdot price(t) - P_{ch}(t) \cdot price(t) \Big)\Delta t + Revenues_{FCR} + Revenues_{aFRR}
-  $$
-  
-  
-For this method, we did not generate the csv files due to the heavy computational time. We have decided to generate a simple prompt using the DE market data for 1 day. The output is an approximation of the maximun profit that can be earned for a determined configuration.
-
-#### **3. Advantages and limitations**
-✅ Advantages:
-- Guarantees a **globally optimal schedule** under given assumptions,  
-- Explicitly handles binary decisions (charge/discharge/idle),  
-- Flexible framework (can include more markets, degradation costs, uncertainty).
-
-⚠️ Limitations:
-- Computationally heavy: solving a full year with 96 intervals/day can take **minutes to hours**,  
-- Requires a solver (e.g., GLPK, CBC, Gurobi),  
-- Sensitive to data quality (NaNs or missing prices must be cleaned).
-
-#### **4. Scripts**
-Inside the `mip_method` folder, we only need:
-- `Solver.py` : main Pyomo model (definition, constraints, solver call).  
-- `main.py` : script that loads the input, runs the model, and exports results.
-
-**Input data processing**
-- `LUNA2000Battery.py` : battery model (capacity, SOC, efficiencies).  
-- `XLSManager.py` : Excel data management (DA, FCR, aFRR prices).  
-- `MarketManager.py` : market classes for DA, FCR, aFRR.  
-- `input/TechArena2025_data.xlsx` : competition dataset.  
-
-
-
-#### **5. Call the method**  
-Use
- ```bash
-python main.py optimize
-```
-
-
-
 ### **Dependencies**
 - `requirements.txt` contains the external packages:  
-  - `pyomo`, `pandas`, `numpy`, `scipy`, `openpyxl`, `matplotlib`, `highspy`.
+  - `pandas`, `numpy`
 
 ### **Documentation**
 - `README.md` : this file.
-
-
 
 
 ## **Installation**
