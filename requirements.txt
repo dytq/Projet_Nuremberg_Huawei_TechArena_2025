@@ -1,0 +1,7 @@
+pandas>=1.5.0
+numpy>=1.21.0
+openpyxl>=3.0.9
+matplotlib>=3.5.0
+scipy>=1.8.0
+pyomo>=6.9.4
+highspy>=1.11.0
